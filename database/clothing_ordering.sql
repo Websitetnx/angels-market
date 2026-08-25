@@ -70,8 +70,8 @@ CREATE TABLE IF NOT EXISTS cart (
     user_id INT NOT NULL,
     product_id INT NOT NULL,
     quantity INT NOT NULL DEFAULT 1,
-    size VARCHAR(10) DEFAULT NULL,
-    color VARCHAR(50) DEFAULT NULL,
+    size VARCHAR(100) DEFAULT NULL,
+    color VARCHAR(100) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
@@ -104,8 +104,8 @@ CREATE TABLE IF NOT EXISTS order_items (
     product_id INT NOT NULL,
     quantity INT NOT NULL,
     price DECIMAL(10,2) NOT NULL,
-    size VARCHAR(10) DEFAULT NULL,
-    color VARCHAR(50) DEFAULT NULL,
+    size VARCHAR(100) DEFAULT NULL,
+    color VARCHAR(100) DEFAULT NULL,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -120,6 +120,7 @@ INSERT INTO users (fullname, email, password, role) VALUES
 -- =====================================================
 -- Insert Default Categories
 -- =====================================================
+INSERT INTO categories (category_name, icon) VALUES
 ('Oversized Shirts', 'bi-shirt'),
 ('Polo Shirts', 'bi-shirt'),
 ('Crop Tops', 'bi-tags'),
