@@ -6,80 +6,43 @@ requireAdmin();
 
 $pageTitle = 'Manage Orders';
 
-// Update status via POST
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
-    $orderId = (int)$_POST['order_id'];
-    $newStatus = sanitize($_POST['new_status']);
-    $validStatuses = ['Pending','Confirmed','Processing','Shipped','Delivered','Cancelled'];
-    if (in_array($newStatus, $validStatuses)) {
-        // If cancelling, restore stock
-        if ($newStatus === 'Cancelled') {
-            $currentStmt = $pdo->prepare("SELECT status FROM orders WHERE id = ?");
-            $currentStmt->execute([$orderId]);
-            $currentOrder = $currentStmt->fetch();
-            if ($currentOrder && $currentOrder['status'] !== 'Cancelled') {
-                $itemsStmt = $pdo->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-                $itemsStmt->execute([$orderId]);
-                while ($item = $itemsStmt->fetch()) {
-                    $pdo->prepare("UPDATE products SET stock = stock + ?, sold = GREATEST(0, sold - ?) WHERE id = ?")
-                        ->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
-                }
-            }
-        }
-        $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?")->execute([$newStatus, $orderId]);
-        setFlash('success', "Order status updated to $newStatus.");
-    } else {
-        setFlash('error', 'Invalid status.');
-    }
-    // Preserve current filters on redirect
+// Update status or delete an order via protected POST actions.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $returnStatus = sanitize($_POST['return_status'] ?? '');
     $redirect = 'orders.php';
-    if (!empty($_POST['return_url'])) {
-        $redirect = $_POST['return_url'];
+    if (in_array($returnStatus, ['Pending', 'Confirmed', 'Processing', 'Shipped', 'Delivered', 'Cancelled'], true)) {
+        $redirect .= '?status=' . urlencode($returnStatus);
     }
-    header('Location: ' . $redirect);
-    exit();
-}
 
-// Delete order
-if (isset($_GET['delete'])) {
-    $delId = (int)$_GET['delete'];
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Refresh the page and try again.');
+        header('Location: ' . $redirect);
+        exit();
+    }
+
+    $orderId = filter_var($_POST['order_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    if ($orderId === false) {
+        setFlash('error', 'Invalid order selected.');
+        header('Location: ' . $redirect);
+        exit();
+    }
+
     try {
-        $pdo->beginTransaction();
-
-        // If order was not cancelled, restore product stock
-        $curStmt = $pdo->prepare("SELECT status FROM orders WHERE id = ?");
-        $curStmt->execute([$delId]);
-        $orderInfo = $curStmt->fetch();
-
-        if ($orderInfo && $orderInfo['status'] !== 'Cancelled') {
-            $itemsStmt = $pdo->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-            $itemsStmt->execute([$delId]);
-            while ($item = $itemsStmt->fetch()) {
-                $pdo->prepare("UPDATE products SET stock = stock + ?, sold = GREATEST(0, sold - ?) WHERE id = ?")
-                    ->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
-            }
-        }
-
-        // Delete order items
-        $pdo->prepare("DELETE FROM order_items WHERE order_id = ?")->execute([$delId]);
-
-        // Delete the order
-        $stmt = $pdo->prepare("DELETE FROM orders WHERE id = ?");
-        $stmt->execute([$delId]);
-
-        if ($stmt->rowCount() > 0) {
-            $pdo->commit();
+        if (isset($_POST['update_status'])) {
+            $newStatus = sanitize($_POST['new_status'] ?? '');
+            changeOrderStatus($pdo, $orderId, $newStatus);
+            setFlash('success', "Order status updated to $newStatus.");
+        } elseif (isset($_POST['delete_order'])) {
+            deleteOrderSafely($pdo, $orderId);
             setFlash('success', 'Order deleted successfully.');
-        } else {
-            $pdo->rollBack();
-            setFlash('error', 'Order not found.');
         }
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        setFlash('error', 'Failed to delete order: ' . $e->getMessage());
+    } catch (Throwable $e) {
+        error_log('Admin order action failed: ' . $e->getMessage());
+        setFlash('error', $e instanceof DomainException
+            ? $e->getMessage()
+            : 'The order could not be updated. Please try again.');
     }
-    $redirect = 'orders.php';
-    if (!empty($_GET['status'])) $redirect .= '?status=' . urlencode($_GET['status']);
+
     header('Location: ' . $redirect);
     exit();
 }
@@ -226,9 +189,10 @@ require_once __DIR__ . '/includes/sidebar.php';
                                 ?>
                                 <li>
                                     <form method="POST">
-                                        <input type="hidden" name="order_id" value="<?= $o['id'] ?>">
-                                        <input type="hidden" name="new_status" value="<?= $s ?>">
-                                        <input type="hidden" name="return_url" value="orders.php?<?= http_build_query($_GET) ?>">
+                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="order_id" value="<?= (int)$o['id'] ?>">
+                                        <input type="hidden" name="new_status" value="<?= htmlspecialchars($s, ENT_QUOTES, 'UTF-8') ?>">
+                                        <input type="hidden" name="return_status" value="<?= htmlspecialchars($statusFilter, ENT_QUOTES, 'UTF-8') ?>">
                                         <button type="submit" name="update_status" class="dropdown-item d-flex align-items-center gap-2 <?= $isCurrent ? 'active' : '' ?>" <?= $isCurrent ? 'disabled' : '' ?>>
                                             <i class="bi <?= $icon ?>"></i> <?= formatStatus($s) ?>
                                             <?php if ($isCurrent): ?><i class="bi bi-check-lg ms-auto text-success"></i><?php endif; ?>
@@ -239,9 +203,16 @@ require_once __DIR__ . '/includes/sidebar.php';
                             </ul>
                         </div>
                         <!-- Delete Order -->
-                        <a href="orders.php?delete=<?= $o['id'] ?><?= $statusFilter ? '&status=' . urlencode($statusFilter) : '' ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure you want to delete this order?');" title="Delete Order">
-                            <i class="bi bi-trash"></i>
-                        </a>
+                        <?php if (in_array($o['status'], ['Pending', 'Cancelled'], true)): ?>
+                        <form method="POST" class="d-inline" onsubmit="return confirm('Delete this order? Only pending or cancelled orders can be deleted.');">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                            <input type="hidden" name="order_id" value="<?= (int)$o['id'] ?>">
+                            <input type="hidden" name="return_status" value="<?= htmlspecialchars($statusFilter, ENT_QUOTES, 'UTF-8') ?>">
+                            <button type="submit" name="delete_order" class="btn btn-sm btn-outline-danger" title="Delete Order">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </form>
+                        <?php endif; ?>
                     </div>
                 </td>
             </tr>
