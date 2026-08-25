@@ -185,4 +185,15 @@ INSERT INTO product_images (product_id, image, is_primary) VALUES
 (9, 'product_9_1.jpg', 1),
 (10, 'product_10_1.jpg', 1),
 (11, 'product_11_1.jpg', 1),
-(12, 'product_12_1.jpg', 1);
+(12, 'beauty-hyaluronic-serum.webp', 1),
+(13, 'beauty-vitamin-c-moisturizer.webp', 1),
+(14, 'beauty-matte-lipstick-set.webp', 1),
+(15, 'beauty-eyeshadow-palette.webp', 1),
+(16, 'beauty-keratin-hair-set.webp', 1),
+(17, 'beauty-bloom-perfume.webp', 1),
+(18, 'beauty-gel-nail-polish-set.webp', 1),
+(19, 'beauty-rose-lip-mask.webp', 1),
+(20, 'beauty-shea-body-cream.webp', 1),
+(21, 'beauty-makeup-brush-set.webp', 1),
+(22, 'beauty-tea-tree-treatment.webp', 1),
+(23, 'beauty-cushion-foundation.webp', 1);
