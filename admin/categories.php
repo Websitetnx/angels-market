@@ -8,6 +8,12 @@ $pageTitle = 'Manage Categories';
 
 // Add category
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_category'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Refresh the page and try again.');
+        header('Location: categories.php');
+        exit();
+    }
+
     $name = sanitize($_POST['category_name'] ?? '');
     if ($name) {
         $check = $pdo->prepare("SELECT id FROM categories WHERE category_name = ?");
@@ -109,6 +115,7 @@ require_once __DIR__ . '/includes/sidebar.php';
             <div class="bg-white rounded-3 shadow-sm p-4">
                 <h6 class="fw-bold mb-3">Add New Category</h6>
                 <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
                     <div class="input-group">
                         <input type="text" name="category_name" class="form-control" placeholder="Category name" required>
                         <button type="submit" name="add_category" class="btn btn-shopee"><i class="bi bi-plus-lg"></i> Add</button>
