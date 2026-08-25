@@ -159,7 +159,7 @@ require_once __DIR__ . '/../includes/navbar.php';
     <h4 class="fw-bold mb-4"><i class="bi bi-bag-check" style="color:var(--primary)"></i> Checkout</h4>
 
     <?php if (!empty($errors)): ?>
-    <div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $e): ?><li><?= $e ?></li><?php endforeach; ?></ul></div>
+    <div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $e): ?><li><?= htmlspecialchars($e, ENT_QUOTES, 'UTF-8') ?></li><?php endforeach; ?></ul></div>
     <?php endif; ?>
 
     <form method="POST">
