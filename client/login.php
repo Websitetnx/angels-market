@@ -12,7 +12,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = strtolower(sanitize($_POST['email'] ?? ''));
     $password = $_POST['password'] ?? '';
 
-    if (!$email || !$password) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        $error = 'Your session expired. Refresh the page and try again.';
+    } elseif (!$email || !$password) {
         $error = 'Please fill in all fields.';
     } else {
         $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND role = 'client'");
@@ -62,6 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
             <div class="mb-3">
                 <label class="form-label small fw-600">Email Address</label>
                 <div class="input-group">
