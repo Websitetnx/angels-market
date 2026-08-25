@@ -24,38 +24,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_category'])) {
 }
 
 // Delete category
-if (isset($_GET['delete'])) {
-    $delId = (int)$_GET['delete'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_category'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Please try deleting the category again.');
+        header('Location: categories.php');
+        exit();
+    }
+
+    $delId = filter_var(
+        $_POST['category_id'] ?? null,
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1]]
+    );
+
+    if ($delId === false) {
+        setFlash('error', 'Invalid category selected.');
+        header('Location: categories.php');
+        exit();
+    }
+
     try {
         $pdo->beginTransaction();
 
-        // Delete product images for all products in this category
-        $pdo->prepare("DELETE pi FROM product_images pi INNER JOIN products p ON pi.product_id = p.id WHERE p.category_id = ?")->execute([$delId]);
+        $categoryStmt = $pdo->prepare("SELECT category_name FROM categories WHERE id = ? FOR UPDATE");
+        $categoryStmt->execute([$delId]);
+        $category = $categoryStmt->fetch();
 
-        // Delete cart items for products in this category
-        $pdo->prepare("DELETE c FROM cart c INNER JOIN products p ON c.product_id = p.id WHERE p.category_id = ?")->execute([$delId]);
-
-        // Delete order items for products in this category
-        $pdo->prepare("DELETE oi FROM order_items oi INNER JOIN products p ON oi.product_id = p.id WHERE p.category_id = ?")->execute([$delId]);
-
-        // Delete products in this category
-        $pdo->prepare("DELETE FROM products WHERE category_id = ?")->execute([$delId]);
-
-        // Delete the category
-        $stmt = $pdo->prepare("DELETE FROM categories WHERE id = ?");
-        $stmt->execute([$delId]);
-
-        if ($stmt->rowCount() > 0) {
-            $pdo->commit();
-            setFlash('success', 'Category and its products deleted successfully.');
-        } else {
+        if (!$category) {
             $pdo->rollBack();
             setFlash('error', 'Category not found.');
+            header('Location: categories.php');
+            exit();
         }
+
+        // Remove related records explicitly so deletion also works on older
+        // databases that were imported without ON DELETE CASCADE constraints.
+        $pdo->prepare("DELETE pi FROM product_images pi INNER JOIN products p ON pi.product_id = p.id WHERE p.category_id = ?")->execute([$delId]);
+        $pdo->prepare("DELETE c FROM cart c INNER JOIN products p ON c.product_id = p.id WHERE p.category_id = ?")->execute([$delId]);
+        $pdo->prepare("DELETE oi FROM order_items oi INNER JOIN products p ON oi.product_id = p.id WHERE p.category_id = ?")->execute([$delId]);
+        $pdo->prepare("DELETE FROM products WHERE category_id = ?")->execute([$delId]);
+
+        $stmt = $pdo->prepare("DELETE FROM categories WHERE id = ?");
+        $stmt->execute([$delId]);
+        $pdo->commit();
+
+        setFlash('success', 'Category "' . $category['category_name'] . '" and its products were deleted.');
     } catch (PDOException $e) {
-        $pdo->rollBack();
-        setFlash('error', 'Failed to delete category: ' . $e->getMessage());
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Category deletion failed: ' . $e->getMessage());
+        setFlash('error', 'The category could not be deleted. Please try again.');
     }
+
     header('Location: categories.php');
     exit();
 }
@@ -95,9 +116,13 @@ require_once __DIR__ . '/includes/sidebar.php';
                         <td><span class="badge bg-primary"><?= $cat['product_count'] ?></span></td>
                         <td class="text-muted small"><?= date('M d, Y', strtotime($cat['created_at'])) ?></td>
                         <td>
-                            <a href="categories.php?delete=<?= $cat['id'] ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure you want to delete this category? All associated products will also be deleted.');" title="Delete Category">
-                                <i class="bi bi-trash"></i> Delete
-                            </a>
+                            <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this category? All associated products will also be deleted.');">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                                <input type="hidden" name="category_id" value="<?= (int)$cat['id'] ?>">
+                                <button type="submit" name="delete_category" class="btn btn-sm btn-outline-danger" title="Delete Category">
+                                    <i class="bi bi-trash"></i> Delete
+                                </button>
+                            </form>
                         </td>
                     </tr>
                     <?php endforeach; ?>
