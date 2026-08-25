@@ -155,6 +155,17 @@ $(document).ready(function() {
         $(this).addClass('active');
     });
 
+    // Prevent duplicate orders while checkout is being processed.
+    $(document).on('submit', '#checkoutForm', function() {
+        const button = $('#placeOrderBtn');
+        if (button.prop('disabled')) {
+            return false;
+        }
+
+        button.prop('disabled', true)
+            .html('<span class="spinner-border spinner-border-sm me-2"></span>Placing Order...');
+    });
+
     // Payment method selection
     $(document).on('click', '.payment-option', function() {
         $('.payment-option').removeClass('selected');

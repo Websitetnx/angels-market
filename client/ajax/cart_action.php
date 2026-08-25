@@ -73,9 +73,21 @@ try {
             $existing = $checkStmt->fetch();
             $newQuantity = $quantity + ($existing ? (int)$existing['quantity'] : 0);
 
-            if ($newQuantity > (int)$product['stock']) {
+            // Stock is shared by every size/color variant of a product.
+            $totalStmt = $pdo->prepare(
+                "SELECT COALESCE(SUM(quantity), 0) AS total_quantity
+                 FROM cart
+                 WHERE user_id = ? AND product_id = ?"
+            );
+            $totalStmt->execute([$userId, $productId]);
+            $newProductTotal = (int)$totalStmt->fetch()['total_quantity'] + $quantity;
+
+            if ($newProductTotal > (int)$product['stock']) {
                 $pdo->rollBack();
-                cartResponse(false, 'Only ' . (int)$product['stock'] . ' item(s) are available.');
+                cartResponse(
+                    false,
+                    'Only ' . (int)$product['stock'] . ' item(s) are available across all selected options.'
+                );
             }
 
             if ($existing) {
@@ -98,18 +110,41 @@ try {
                 cartResponse(false, 'Invalid cart item.');
             }
 
-            $stmt = $pdo->prepare(
-                "UPDATE cart c
+            $pdo->beginTransaction();
+
+            $itemStmt = $pdo->prepare(
+                "SELECT c.id, c.product_id, c.quantity, p.stock, p.status
+                 FROM cart c
                  INNER JOIN products p ON p.id = c.product_id
-                 SET c.quantity = c.quantity + 1
                  WHERE c.id = ? AND c.user_id = ?
-                   AND p.status = 'Available'
-                   AND c.quantity < p.stock"
+                 FOR UPDATE"
             );
-            $stmt->execute([$cartId, $userId]);
-            if ($stmt->rowCount() !== 1) {
-                cartResponse(false, 'Maximum stock reached or the item is unavailable.');
+            $itemStmt->execute([$cartId, $userId]);
+            $cartItem = $itemStmt->fetch();
+
+            if (!$cartItem || $cartItem['status'] !== 'Available') {
+                $pdo->rollBack();
+                cartResponse(false, 'The cart item is unavailable.');
             }
+
+            $totalStmt = $pdo->prepare(
+                "SELECT COALESCE(SUM(quantity), 0) AS total_quantity
+                 FROM cart
+                 WHERE user_id = ? AND product_id = ?"
+            );
+            $totalStmt->execute([$userId, $cartItem['product_id']]);
+            $productTotal = (int)$totalStmt->fetch()['total_quantity'];
+
+            if ($productTotal >= (int)$cartItem['stock']) {
+                $pdo->rollBack();
+                cartResponse(false, 'Maximum stock reached across all selected options.');
+            }
+
+            $updateStmt = $pdo->prepare(
+                "UPDATE cart SET quantity = quantity + 1 WHERE id = ? AND user_id = ?"
+            );
+            $updateStmt->execute([$cartId, $userId]);
+            $pdo->commit();
             cartResponse(true, 'Cart updated.');
 
         case 'decrease':
