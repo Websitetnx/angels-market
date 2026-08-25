@@ -10,7 +10,7 @@ $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $fullname = sanitize($_POST['fullname'] ?? '');
-    $email = sanitize($_POST['email'] ?? '');
+    $email = strtolower(sanitize($_POST['email'] ?? ''));
     $password = $_POST['password'] ?? '';
     $confirmPassword = $_POST['confirm_password'] ?? '';
 
