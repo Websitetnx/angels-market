@@ -72,10 +72,10 @@ if ($flashSuccess || $flashError):
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     <?php if ($flashSuccess): ?>
-    showToast('<?= addslashes($flashSuccess) ?>', 'success');
+    showToast(<?= json_encode($flashSuccess, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>, 'success');
     <?php endif; ?>
     <?php if ($flashError): ?>
-    showToast('<?= addslashes($flashError) ?>', 'error');
+    showToast(<?= json_encode($flashError, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>, 'error');
     <?php endif; ?>
 });
 </script>
