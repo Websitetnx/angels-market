@@ -6,36 +6,76 @@ requireAdmin();
 
 $pageTitle = 'Manage Customers';
 
-// Delete customer
-if (isset($_GET['delete'])) {
-    $delId = (int)$_GET['delete'];
+// Remove customer access and personal profile data while preserving order history.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_customer'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Please try deleting the customer again.');
+        header('Location: customers.php');
+        exit();
+    }
+
+    $delId = filter_var(
+        $_POST['customer_id'] ?? null,
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1]]
+    );
+
+    if ($delId === false) {
+        setFlash('error', 'Invalid customer selected.');
+        header('Location: customers.php');
+        exit();
+    }
+
     try {
         $pdo->beginTransaction();
 
-        // Delete cart items for this customer
+        // Lock and verify the account. Admin accounts can never be removed here.
+        $customerStmt = $pdo->prepare("SELECT fullname FROM users WHERE id = ? AND role = 'client' FOR UPDATE");
+        $customerStmt->execute([$delId]);
+        $customer = $customerStmt->fetch();
+
+        if (!$customer) {
+            $pdo->rollBack();
+            setFlash('error', 'Customer not found or admin accounts cannot be deleted.');
+            header('Location: customers.php');
+            exit();
+        }
+
+        // Cart data is temporary and can be safely removed.
         $pdo->prepare("DELETE FROM cart WHERE user_id = ?")->execute([$delId]);
 
-        // Delete order items for this customer's orders
-        $pdo->prepare("DELETE oi FROM order_items oi INNER JOIN orders o ON oi.order_id = o.id WHERE o.user_id = ?")->execute([$delId]);
+        // Anonymize and disable the account instead of destroying its orders.
+        $deletedEmail = 'deleted-user-' . $delId . '-' . bin2hex(random_bytes(4)) . '@example.invalid';
+        $disabledPassword = password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT);
+        $stmt = $pdo->prepare(
+            "UPDATE users
+             SET fullname = 'Deleted Customer',
+                 email = ?,
+                 phone = NULL,
+                 address = NULL,
+                 city = NULL,
+                 province = NULL,
+                 zip_code = NULL,
+                 password = ?,
+                 avatar = NULL
+             WHERE id = ? AND role = 'client'"
+        );
+        $stmt->execute([$deletedEmail, $disabledPassword, $delId]);
 
-        // Delete orders for this customer
-        $pdo->prepare("DELETE FROM orders WHERE user_id = ?")->execute([$delId]);
-
-        // Delete the customer (only clients, not admins)
-        $stmt = $pdo->prepare("DELETE FROM users WHERE id = ? AND role = 'client'");
-        $stmt->execute([$delId]);
-
-        if ($stmt->rowCount() > 0) {
-            $pdo->commit();
-            setFlash('success', 'Customer deleted successfully.');
-        } else {
-            $pdo->rollBack();
-            setFlash('error', 'Customer not found or cannot delete admin accounts.');
+        if ($stmt->rowCount() !== 1) {
+            throw new RuntimeException('Customer record changed before removal.');
         }
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        setFlash('error', 'Failed to delete customer: ' . $e->getMessage());
+
+        $pdo->commit();
+        setFlash('success', 'Customer "' . $customer['fullname'] . '" was removed. Order history was preserved.');
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Customer removal failed: ' . $e->getMessage());
+        setFlash('error', 'The customer could not be removed. Please try again.');
     }
+
     header('Location: customers.php');
     exit();
 }
@@ -44,7 +84,7 @@ $search = sanitize($_GET['q'] ?? '');
 $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 15;
 
-$where = "u.role = 'client'";
+$where = "u.role = 'client' AND u.email NOT LIKE 'deleted-user-%@example.invalid'";
 $params = [];
 if ($search) { $where .= " AND (u.fullname LIKE ? OR u.email LIKE ?)"; $params[] = "%$search%"; $params[] = "%$search%"; }
 
@@ -95,9 +135,13 @@ require_once __DIR__ . '/includes/sidebar.php';
                 <td class="fw-bold" style="color:var(--primary)"><?= formatPrice($c['total_spent']) ?></td>
                 <td class="text-muted small"><?= date('M d, Y', strtotime($c['created_at'])) ?></td>
                 <td>
-                    <a href="customers.php?delete=<?= $c['id'] ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure you want to delete this customer? All their orders and cart items will also be deleted.');" title="Delete Customer">
-                        <i class="bi bi-trash"></i> Delete
-                    </a>
+                    <form method="POST" class="d-inline" onsubmit="return confirm('Remove this customer account? Login access and profile data will be removed, while order history will be retained.');">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                        <input type="hidden" name="customer_id" value="<?= (int)$c['id'] ?>">
+                        <button type="submit" name="delete_customer" class="btn btn-sm btn-outline-danger" title="Delete Customer">
+                            <i class="bi bi-trash"></i> Delete
+                        </button>
+                    </form>
                 </td>
             </tr>
             <?php endforeach; ?>
