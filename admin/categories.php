@@ -51,10 +51,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_category'])) {
         $category = $categoryStmt->fetch();
 
         if (!$category) {
-            $pdo->rollBack();
-            setFlash('error', 'Category not found.');
-            header('Location: categories.php');
-            exit();
+            throw new RuntimeException('Category not found.');
+        }
+
+        $historyStmt = $pdo->prepare(
+            "SELECT COUNT(*)
+             FROM order_items oi
+             INNER JOIN products p ON p.id = oi.product_id
+             WHERE p.category_id = ?"
+        );
+        $historyStmt->execute([$delId]);
+        if ((int)$historyStmt->fetchColumn() > 0) {
+            throw new DomainException(
+                'This category contains products with order history. Move or archive those products before deleting it.'
+            );
         }
 
         // Remove related records explicitly so deletion also works on older
@@ -69,12 +79,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_category'])) {
         $pdo->commit();
 
         setFlash('success', 'Category "' . $category['category_name'] . '" and its products were deleted.');
-    } catch (PDOException $e) {
+    } catch (Throwable $e) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
         }
         error_log('Category deletion failed: ' . $e->getMessage());
-        setFlash('error', 'The category could not be deleted. Please try again.');
+        setFlash('error', $e instanceof DomainException
+            ? $e->getMessage()
+            : 'The category could not be deleted. Please try again.');
     }
 
     header('Location: categories.php');
