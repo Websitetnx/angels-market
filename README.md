@@ -18,14 +18,17 @@ A full-featured PHP e-commerce web application for Angel's Beauty Co., built wit
 
 ## Setup Instructions
 
-1. Clone the repository into your XAMPP `htdocs` folder as `Seller Market`:
+1. Clone or extract the repository anywhere inside your XAMPP `htdocs` folder. The application detects its folder name automatically.
    ```
-   git clone https://github.com/Websitetnx/angels-market "Seller Market"
+   git clone https://github.com/Websitetnx/angels-market
    ```
-2. Import `database/clothing_ordering.sql` into MySQL via phpMyAdmin.
-3. Edit `includes/db.php` with your database credentials if needed.
-4. Start Apache and MySQL in XAMPP.
-5. Visit `http://localhost/Seller Market/client/home.php`
+2. For a fresh installation, import `database/clothing_ordering.sql` through phpMyAdmin.
+3. For an existing installation, import the migration files in numeric order:
+   - `database/001_beauty_product_images.sql`
+   - `database/002_system_bugfixes.sql`
+4. Edit `includes/db.php` if your MySQL credentials differ from the XAMPP defaults. You may also set `DB_HOST`, `DB_NAME`, `DB_USER`, and `DB_PASS` environment variables.
+5. Make sure PHP extensions `pdo_mysql` and `fileinfo` are enabled.
+6. Start Apache and MySQL, then open `client/home.php` inside the folder you chose, for example `http://localhost/angels-market/client/home.php`.
 
 ## Admin Access
 - URL: `http://localhost/Seller Market/admin/login.php`
