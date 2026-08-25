@@ -104,6 +104,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Upload new images
         if (!empty($_FILES['images']['name'][0])) {
             $files = $_FILES['images'];
+            $hasPrimary = false;
+            foreach ($images as $existingImage) {
+                if ((int)$existingImage['is_primary'] === 1) {
+                    $hasPrimary = true;
+                    break;
+                }
+            }
             for ($i = 0; $i < count($files['name']); $i++) {
                 $file = ['name'=>$files['name'][$i], 'type'=>$files['type'][$i], 'tmp_name'=>$files['tmp_name'][$i], 'error'=>$files['error'][$i], 'size'=>$files['size'][$i]];
                 if ($file['error'] === 0) {
