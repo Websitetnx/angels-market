@@ -3,16 +3,46 @@
  */
 $(document).ready(function() {
     const csrfToken = $('meta[name="csrf-token"]').attr('content') || '';
+    const cartActionUrl = $('meta[name="cart-action-url"]').attr('content') || 'ajax/cart_action.php';
+
+    function getAjaxErrorMessage(xhr) {
+        if (xhr.responseJSON && xhr.responseJSON.message) {
+            return xhr.responseJSON.message;
+        }
+
+        if (typeof xhr.responseText === 'string' && xhr.responseText.trim()) {
+            try {
+                const response = JSON.parse(xhr.responseText);
+                if (response && response.message) {
+                    return response.message;
+                }
+            } catch (e) {
+                // The response was not JSON. Use a safe status-specific message.
+            }
+        }
+
+        if (xhr.status === 404) {
+            return 'The cart service could not be found. Refresh the page and try again.';
+        }
+        if (xhr.status >= 500) {
+            return 'The cart service encountered a server error. Check that the database migration is installed.';
+        }
+        if (xhr.status === 0) {
+            return 'Could not connect to the cart service. Check your connection and application URL.';
+        }
+        return 'The cart request failed (HTTP ' + xhr.status + ').';
+    }
 
     // Toast notification
     window.showToast = function(message, type = 'success') {
         const id = 'toast-' + Date.now();
         const icons = { success:'bi-check-circle-fill', error:'bi-x-circle-fill', warning:'bi-exclamation-triangle-fill', info:'bi-info-circle-fill' };
         const colors = { success:'#00bfa5', error:'#ee4d2d', warning:'#ffc107', info:'#2196f3' };
+        const safeMessage = $('<div>').text(String(message)).html();
         const html = `<div id="${id}" class="toast align-items-center border-0 show" role="alert" style="border-left:4px solid ${colors[type]}">
             <div class="d-flex"><div class="toast-body d-flex align-items-center gap-2">
             <i class="bi ${icons[type]}" style="color:${colors[type]};font-size:20px"></i>
-            <span>${message}</span></div>
+            <span>${safeMessage}</span></div>
             <button type="button" class="btn-close me-2 m-auto" onclick="$('#${id}').fadeOut(300,function(){$(this).remove()})"></button>
             </div></div>`;
         if (!$('.toast-container').length) {
@@ -52,7 +82,7 @@ $(document).ready(function() {
         btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span>');
 
         $.ajax({
-            url: baseUrl + 'client/ajax/cart_action.php',
+            url: cartActionUrl,
             method: 'POST',
             data: {
                 action: 'add',
@@ -78,10 +108,7 @@ $(document).ready(function() {
                 }
             },
             error: function(xhr) {
-                const message = xhr.responseJSON && xhr.responseJSON.message
-                    ? xhr.responseJSON.message
-                    : 'Something went wrong.';
-                showToast(message, 'error');
+                showToast(getAjaxErrorMessage(xhr), 'error');
             },
             complete: function() {
                 btn.prop('disabled', false).html(originalHtml);
@@ -94,13 +121,16 @@ $(document).ready(function() {
         const cartId = $(this).data('cart-id');
         const action = $(this).data('action');
         $.ajax({
-            url: baseUrl + 'client/ajax/cart_action.php',
+            url: cartActionUrl,
             method: 'POST',
             data: { action: action, cart_id: cartId, csrf_token: csrfToken },
             dataType: 'json',
             success: function(res) {
                 if (res.success) { location.reload(); }
                 else { showToast(res.message, 'error'); }
+            },
+            error: function(xhr) {
+                showToast(getAjaxErrorMessage(xhr), 'error');
             }
         });
     });
@@ -110,13 +140,16 @@ $(document).ready(function() {
         const cartId = $(this).data('cart-id');
         if (confirm('Remove this item from cart?')) {
             $.ajax({
-                url: baseUrl + 'client/ajax/cart_action.php',
+                url: cartActionUrl,
                 method: 'POST',
                 data: { action: 'remove', cart_id: cartId, csrf_token: csrfToken },
                 dataType: 'json',
                 success: function(res) {
                     if (res.success) { location.reload(); }
                     else { showToast(res.message, 'error'); }
+                },
+                error: function(xhr) {
+                    showToast(getAjaxErrorMessage(xhr), 'error');
                 }
             });
         }

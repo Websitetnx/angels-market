@@ -1,7 +1,31 @@
 <?php
+// Keep warnings/notices from corrupting the JSON response consumed by the cart UI.
+ob_start();
+register_shutdown_function(function () {
+    $error = error_get_last();
+    $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR];
+
+    if ($error && in_array($error['type'], $fatalTypes, true)) {
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'success' => false,
+            'message' => 'The cart service encountered a PHP error. Check the PHP error log.',
+        ]);
+    }
+});
+
 require_once __DIR__ . '/../../includes/db.php';
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
+
+$startupOutput = ob_get_clean();
+if (trim((string)$startupOutput) !== '') {
+    error_log('Cart endpoint startup output: ' . trim($startupOutput));
+}
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -184,5 +208,16 @@ try {
         $pdo->rollBack();
     }
     error_log('Cart action failed: ' . $e->getMessage());
-    cartResponse(false, 'The cart could not be updated. Please try again.', [], 500);
+
+    if ($e instanceof PDOException &&
+        ($e->getCode() === '22001' || stripos($e->getMessage(), 'Data too long') !== false)) {
+        cartResponse(
+            false,
+            'The database needs an update. Import database/002_system_bugfixes.sql once, then try again.',
+            [],
+            500
+        );
+    }
+
+    cartResponse(false, 'The cart could not be updated. Check the PHP error log for details.', [], 500);
 }

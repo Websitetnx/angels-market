@@ -45,6 +45,10 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script>const baseUrl = '<?= BASE_URL ?>';</script>
-<script src="<?= BASE_URL ?>assets/js/main.js"></script>
+<?php
+$mainJsFile = __DIR__ . '/../assets/js/main.js';
+$mainJsVersion = is_file($mainJsFile) ? filemtime($mainJsFile) : 1;
+?>
+<script src="<?= BASE_URL ?>assets/js/main.js?v=<?= urlencode((string)$mainJsVersion) ?>"></script>
 </body>
 </html>
