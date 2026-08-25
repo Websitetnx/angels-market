@@ -3,89 +3,151 @@ require_once __DIR__ . '/../../includes/db.php';
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
-// Handle AJAX cart actions
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 
-if (!isLoggedIn()) {
-    echo json_encode(['success' => false, 'message' => 'Please login first.']);
+function cartResponse($success, $message = '', $extra = [], $status = 200) {
+    http_response_code($status);
+    echo json_encode(array_merge(['success' => $success, 'message' => $message], $extra));
     exit();
 }
 
-$userId = $_SESSION['user_id'];
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    cartResponse(false, 'Invalid request method.', [], 405);
+}
+if (!isLoggedIn() || !isClient()) {
+    cartResponse(false, 'Please login as a customer first.', [], 401);
+}
+if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+    cartResponse(false, 'Your session expired. Refresh the page and try again.', [], 419);
+}
+
+$userId = (int)$_SESSION['user_id'];
 $action = $_POST['action'] ?? '';
 
-switch ($action) {
-    case 'add':
-        $productId = (int)($_POST['product_id'] ?? 0);
-        $quantity = max(1, (int)($_POST['quantity'] ?? 1));
-        $size = sanitize($_POST['size'] ?? '');
-        $color = sanitize($_POST['color'] ?? '');
+try {
+    switch ($action) {
+        case 'add':
+            $productId = filter_var($_POST['product_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $quantity = filter_var($_POST['quantity'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $size = sanitize($_POST['size'] ?? '');
+            $color = sanitize($_POST['color'] ?? '');
 
-        // Check product exists and has stock
-        $stmt = $pdo->prepare("SELECT * FROM products WHERE id = ? AND status = 'Available'");
-        $stmt->execute([$productId]);
-        $product = $stmt->fetch();
+            if ($productId === false || $quantity === false) {
+                cartResponse(false, 'Invalid product or quantity.');
+            }
 
-        if (!$product) {
-            echo json_encode(['success' => false, 'message' => 'Product not available.']);
-            exit();
-        }
+            $pdo->beginTransaction();
 
-        if ($product['stock'] < $quantity) {
-            echo json_encode(['success' => false, 'message' => 'Insufficient stock.']);
-            exit();
-        }
+            $stmt = $pdo->prepare(
+                "SELECT id, stock, sizes, colors
+                 FROM products
+                 WHERE id = ? AND status = 'Available'
+                 FOR UPDATE"
+            );
+            $stmt->execute([$productId]);
+            $product = $stmt->fetch();
 
-        // Check if already in cart with same size/color
-        $checkStmt = $pdo->prepare("SELECT * FROM cart WHERE user_id = ? AND product_id = ? AND size = ? AND color = ?");
-        $checkStmt->execute([$userId, $productId, $size, $color]);
-        $existing = $checkStmt->fetch();
+            if (!$product || (int)$product['stock'] <= 0) {
+                $pdo->rollBack();
+                cartResponse(false, 'Product is not available.');
+            }
 
-        if ($existing) {
-            $newQty = $existing['quantity'] + $quantity;
-            $updateStmt = $pdo->prepare("UPDATE cart SET quantity = ? WHERE id = ?");
-            $updateStmt->execute([$newQty, $existing['id']]);
-        } else {
-            $insertStmt = $pdo->prepare("INSERT INTO cart (user_id, product_id, quantity, size, color) VALUES (?, ?, ?, ?, ?)");
-            $insertStmt->execute([$userId, $productId, $quantity, $size, $color]);
-        }
+            $availableSizes = array_values(array_filter(array_map('trim', explode(',', (string)$product['sizes']))));
+            $availableColors = array_values(array_filter(array_map('trim', explode(',', (string)$product['colors']))));
 
-        $cartCount = getCartCount($pdo, $userId);
-        echo json_encode(['success' => true, 'message' => 'Added to cart!', 'cart_count' => $cartCount]);
-        break;
+            if ($availableSizes && !in_array($size, $availableSizes, true)) {
+                $pdo->rollBack();
+                cartResponse(false, 'Please select a valid size or product option.');
+            }
+            if ($availableColors && !in_array($color, $availableColors, true)) {
+                $pdo->rollBack();
+                cartResponse(false, 'Please select a valid color.');
+            }
 
-    case 'increase':
-        $cartId = (int)($_POST['cart_id'] ?? 0);
-        $stmt = $pdo->prepare("SELECT c.*, p.stock FROM cart c JOIN products p ON c.product_id = p.id WHERE c.id = ? AND c.user_id = ?");
-        $stmt->execute([$cartId, $userId]);
-        $item = $stmt->fetch();
-        if ($item && $item['quantity'] < $item['stock']) {
-            $pdo->prepare("UPDATE cart SET quantity = quantity + 1 WHERE id = ?")->execute([$cartId]);
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Maximum stock reached.']);
-        }
-        break;
+            $checkStmt = $pdo->prepare(
+                "SELECT id, quantity FROM cart
+                 WHERE user_id = ? AND product_id = ? AND size = ? AND color = ?
+                 FOR UPDATE"
+            );
+            $checkStmt->execute([$userId, $productId, $size, $color]);
+            $existing = $checkStmt->fetch();
+            $newQuantity = $quantity + ($existing ? (int)$existing['quantity'] : 0);
 
-    case 'decrease':
-        $cartId = (int)($_POST['cart_id'] ?? 0);
-        $stmt = $pdo->prepare("SELECT * FROM cart WHERE id = ? AND user_id = ?");
-        $stmt->execute([$cartId, $userId]);
-        $item = $stmt->fetch();
-        if ($item && $item['quantity'] > 1) {
-            $pdo->prepare("UPDATE cart SET quantity = quantity - 1 WHERE id = ?")->execute([$cartId]);
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Minimum quantity is 1.']);
-        }
-        break;
+            if ($newQuantity > (int)$product['stock']) {
+                $pdo->rollBack();
+                cartResponse(false, 'Only ' . (int)$product['stock'] . ' item(s) are available.');
+            }
 
-    case 'remove':
-        $cartId = (int)($_POST['cart_id'] ?? 0);
-        $pdo->prepare("DELETE FROM cart WHERE id = ? AND user_id = ?")->execute([$cartId, $userId]);
-        echo json_encode(['success' => true]);
-        break;
+            if ($existing) {
+                $updateStmt = $pdo->prepare("UPDATE cart SET quantity = ? WHERE id = ? AND user_id = ?");
+                $updateStmt->execute([$newQuantity, $existing['id'], $userId]);
+            } else {
+                $insertStmt = $pdo->prepare(
+                    "INSERT INTO cart (user_id, product_id, quantity, size, color)
+                     VALUES (?, ?, ?, ?, ?)"
+                );
+                $insertStmt->execute([$userId, $productId, $quantity, $size, $color]);
+            }
 
-    default:
-        echo json_encode(['success' => false, 'message' => 'Invalid action.']);
+            $pdo->commit();
+            cartResponse(true, 'Added to cart!', ['cart_count' => getCartCount($pdo, $userId)]);
+
+        case 'increase':
+            $cartId = filter_var($_POST['cart_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($cartId === false) {
+                cartResponse(false, 'Invalid cart item.');
+            }
+
+            $stmt = $pdo->prepare(
+                "UPDATE cart c
+                 INNER JOIN products p ON p.id = c.product_id
+                 SET c.quantity = c.quantity + 1
+                 WHERE c.id = ? AND c.user_id = ?
+                   AND p.status = 'Available'
+                   AND c.quantity < p.stock"
+            );
+            $stmt->execute([$cartId, $userId]);
+            if ($stmt->rowCount() !== 1) {
+                cartResponse(false, 'Maximum stock reached or the item is unavailable.');
+            }
+            cartResponse(true, 'Cart updated.');
+
+        case 'decrease':
+            $cartId = filter_var($_POST['cart_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($cartId === false) {
+                cartResponse(false, 'Invalid cart item.');
+            }
+
+            $stmt = $pdo->prepare(
+                "UPDATE cart SET quantity = quantity - 1
+                 WHERE id = ? AND user_id = ? AND quantity > 1"
+            );
+            $stmt->execute([$cartId, $userId]);
+            if ($stmt->rowCount() !== 1) {
+                cartResponse(false, 'Minimum quantity is 1.');
+            }
+            cartResponse(true, 'Cart updated.');
+
+        case 'remove':
+            $cartId = filter_var($_POST['cart_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($cartId === false) {
+                cartResponse(false, 'Invalid cart item.');
+            }
+
+            $stmt = $pdo->prepare("DELETE FROM cart WHERE id = ? AND user_id = ?");
+            $stmt->execute([$cartId, $userId]);
+            if ($stmt->rowCount() !== 1) {
+                cartResponse(false, 'Cart item was not found.');
+            }
+            cartResponse(true, 'Item removed.', ['cart_count' => getCartCount($pdo, $userId)]);
+
+        default:
+            cartResponse(false, 'Invalid cart action.', [], 400);
+    }
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    error_log('Cart action failed: ' . $e->getMessage());
+    cartResponse(false, 'The cart could not be updated. Please try again.', [], 500);
 }
