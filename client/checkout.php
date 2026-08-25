@@ -70,6 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $lockedTotal = 0;
+            $requestedByProduct = [];
             foreach ($lockedItems as $item) {
                 $quantity = (int)$item['quantity'];
                 if ($quantity < 1 || $item['status'] !== 'Available' || (int)$item['stock'] < $quantity) {
@@ -85,7 +86,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new RuntimeException('Select a valid color for ' . $item['product_name'] . '.');
                 }
 
+                $productId = (int)$item['product_id'];
+                if (!isset($requestedByProduct[$productId])) {
+                    $requestedByProduct[$productId] = [
+                        'name' => $item['product_name'],
+                        'stock' => (int)$item['stock'],
+                        'quantity' => 0,
+                    ];
+                }
+                $requestedByProduct[$productId]['quantity'] += $quantity;
                 $lockedTotal += getDiscountedPrice($item['price'], $item['discount']) * $quantity;
+            }
+
+            // A product can appear in several cart rows when different variants
+            // are selected. Stock belongs to the product, so validate their sum.
+            foreach ($requestedByProduct as $requested) {
+                if ($requested['quantity'] > $requested['stock']) {
+                    throw new RuntimeException(
+                        $requested['name'] . ' has only ' . $requested['stock'] .
+                        ' item(s) available across all selected options.'
+                    );
+                }
             }
 
             $orderNumber = generateOrderNumber();
@@ -144,9 +165,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->rollBack();
             }
             error_log('Checkout failed: ' . $e->getMessage());
-            $errors[] = $e instanceof RuntimeException
-                ? $e->getMessage()
-                : 'Something went wrong. Please try again.';
+            if ($e instanceof RuntimeException) {
+                $errors[] = $e->getMessage();
+            } elseif ($e instanceof PDOException &&
+                ($e->getCode() === '22001' || stripos($e->getMessage(), 'Data too long') !== false)) {
+                $errors[] = 'The database needs the latest option-length update. Import database/002_system_bugfixes.sql once, then place the order again.';
+            } else {
+                $errors[] = 'The order could not be placed. Please try again. If it continues, ask the administrator to check the PHP error log.';
+            }
         }
     }
 }
@@ -162,7 +188,7 @@ require_once __DIR__ . '/../includes/navbar.php';
     <div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $e): ?><li><?= htmlspecialchars($e, ENT_QUOTES, 'UTF-8') ?></li><?php endforeach; ?></ul></div>
     <?php endif; ?>
 
-    <form method="POST">
+    <form method="POST" id="checkoutForm">
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
         <div class="row g-4">
             <div class="col-lg-7">
@@ -247,7 +273,7 @@ require_once __DIR__ . '/../includes/navbar.php';
                         <span class="fw-bold fs-5">Total</span>
                         <span class="fw-bold fs-5" style="color:var(--primary)"><?= formatPrice($totalAmount) ?></span>
                     </div>
-                    <button type="submit" class="btn btn-shopee w-100 py-2 fs-5"><i class="bi bi-check-circle"></i> Place Order</button>
+                    <button type="submit" name="place_order" id="placeOrderBtn" class="btn btn-shopee w-100 py-2 fs-5"><i class="bi bi-check-circle"></i> Place Order</button>
                 </div>
             </div>
         </div>
