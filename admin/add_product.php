@@ -9,6 +9,10 @@ $categories = getCategories($pdo);
 $errors = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        $errors[] = 'Your session expired. Refresh the page and try again.';
+    }
+
     $productName = sanitize($_POST['product_name'] ?? '');
     $description = sanitize($_POST['description'] ?? '');
     $categoryId = (int)($_POST['category_id'] ?? 0);
@@ -36,6 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Upload images
         if (!empty($_FILES['images']['name'][0])) {
             $files = $_FILES['images'];
+            $uploadedCount = 0;
             for ($i = 0; $i < count($files['name']); $i++) {
                 $file = [
                     'name' => $files['name'][$i],
@@ -47,8 +52,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($file['error'] === 0) {
                     $result = uploadProductImage($file, $productId);
                     if ($result['success']) {
-                        $isPrimary = ($i === 0) ? 1 : 0;
+                        $isPrimary = ($uploadedCount === 0) ? 1 : 0;
                         $pdo->prepare("INSERT INTO product_images (product_id, image, is_primary) VALUES (?,?,?)")->execute([$productId, $result['filename'], $isPrimary]);
+                        $uploadedCount++;
                     }
                 }
             }
@@ -75,6 +81,7 @@ require_once __DIR__ . '/includes/sidebar.php';
     <?php endif; ?>
 
     <form method="POST" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
         <div class="row g-4">
             <div class="col-lg-8">
                 <div class="bg-white rounded-3 shadow-sm p-4 mb-3">

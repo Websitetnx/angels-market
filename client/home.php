@@ -3,7 +3,7 @@ require_once __DIR__ . '/../includes/db.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-$pageTitle = 'Shop Clothes Online';
+$pageTitle = 'Shop Beauty Products';
 
 // Filters
 $search = isset($_GET['q']) ? sanitize($_GET['q']) : '';
@@ -13,7 +13,7 @@ $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
 $perPage = 20;
 
 // Build query
-$where = ["p.status = 'Available'"];
+$where = ["p.status = 'Available'", "p.stock > 0"];
 $params = [];
 
 if ($search) {
@@ -60,7 +60,7 @@ $products = $stmt->fetchAll();
 $featuredStmt = $pdo->query("SELECT p.*, c.category_name,
     (SELECT pi.image FROM product_images pi WHERE pi.product_id = p.id AND pi.is_primary = 1 LIMIT 1) as primary_image
     FROM products p LEFT JOIN categories c ON p.category_id = c.id 
-    WHERE p.featured = 1 AND p.status = 'Available' ORDER BY p.sold DESC LIMIT 10");
+    WHERE p.featured = 1 AND p.status = 'Available' AND p.stock > 0 ORDER BY p.sold DESC LIMIT 10");
 $featuredProducts = $featuredStmt->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
@@ -72,7 +72,7 @@ require_once __DIR__ . '/../includes/navbar.php';
 <section class="hero-banner">
     <div class="container">
         <h1><i class="bi bi-bag-heart-fill"></i> Angel's Beauty Co.</h1>
-        <p>Discover trendy clothes at unbeatable prices &mdash; Free shipping on orders over ₱999!</p>
+        <p>Discover premium beauty essentials at affordable prices &mdash; delivered straight to your doorstep.</p>
         <a href="#products" class="btn btn-light btn-lg mt-3 fw-bold" style="color:var(--primary)">
             <i class="bi bi-fire"></i> Shop Now
         </a>
@@ -149,7 +149,11 @@ require_once __DIR__ . '/../includes/navbar.php';
             </div>
             <div class="card-actions">
                 <a href="<?= CLIENT_URL ?>product.php?id=<?= $fp['id'] ?>" class="btn btn-sm btn-shopee-outline"><i class="bi bi-eye"></i> View</a>
-                <button class="btn btn-sm btn-shopee btn-add-to-cart" data-product-id="<?= $fp['id'] ?>"><i class="bi bi-cart-plus"></i> Cart</button>
+                <?php if (!empty($fp['sizes']) || !empty($fp['colors'])): ?>
+                <a href="<?= CLIENT_URL ?>product.php?id=<?= (int)$fp['id'] ?>" class="btn btn-sm btn-shopee"><i class="bi bi-sliders"></i> Options</a>
+                <?php else: ?>
+                <button class="btn btn-sm btn-shopee btn-add-to-cart" data-product-id="<?= (int)$fp['id'] ?>"><i class="bi bi-cart-plus"></i> Cart</button>
+                <?php endif; ?>
             </div>
         </div>
         <?php endforeach; ?>
@@ -208,7 +212,11 @@ require_once __DIR__ . '/../includes/navbar.php';
             </div>
             <div class="card-actions">
                 <a href="<?= CLIENT_URL ?>product.php?id=<?= $p['id'] ?>" class="btn btn-sm btn-shopee-outline"><i class="bi bi-eye"></i> View</a>
-                <button class="btn btn-sm btn-shopee btn-add-to-cart" data-product-id="<?= $p['id'] ?>"><i class="bi bi-cart-plus"></i> Cart</button>
+                <?php if (!empty($p['sizes']) || !empty($p['colors'])): ?>
+                <a href="<?= CLIENT_URL ?>product.php?id=<?= (int)$p['id'] ?>" class="btn btn-sm btn-shopee"><i class="bi bi-sliders"></i> Options</a>
+                <?php else: ?>
+                <button class="btn btn-sm btn-shopee btn-add-to-cart" data-product-id="<?= (int)$p['id'] ?>"><i class="bi bi-cart-plus"></i> Cart</button>
+                <?php endif; ?>
             </div>
         </div>
         <?php endforeach; ?>

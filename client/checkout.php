@@ -38,47 +38,115 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $notes = sanitize($_POST['notes'] ?? '');
 
     $errors = [];
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) $errors[] = 'Your session expired. Refresh the page and try again.';
     if (!$fullname) $errors[] = 'Full name is required.';
     if (!$phone) $errors[] = 'Phone number is required.';
     if (!$address) $errors[] = 'Address is required.';
     if (!$city) $errors[] = 'City is required.';
     if (!$province) $errors[] = 'Province is required.';
     if (!$zipCode) $errors[] = 'ZIP code is required.';
-    if (!in_array($paymentMethod, ['COD', 'GCash'])) $errors[] = 'Invalid payment method.';
+    if (!in_array($paymentMethod, ['COD', 'GCash'], true)) $errors[] = 'Invalid payment method.';
 
     if (empty($errors)) {
         try {
             $pdo->beginTransaction();
 
+            // Lock current cart and product rows, then calculate the order from
+            // current database values so stock cannot become negative.
+            $lockStmt = $pdo->prepare(
+                "SELECT c.*, p.product_name, p.price, p.discount, p.stock, p.status,
+                        p.sizes AS available_sizes, p.colors AS available_colors
+                 FROM cart c
+                 INNER JOIN products p ON p.id = c.product_id
+                 WHERE c.user_id = ?
+                 ORDER BY c.id
+                 FOR UPDATE"
+            );
+            $lockStmt->execute([$userId]);
+            $lockedItems = $lockStmt->fetchAll();
+
+            if (!$lockedItems) {
+                throw new RuntimeException('Your cart is empty.');
+            }
+
+            $lockedTotal = 0;
+            foreach ($lockedItems as $item) {
+                $quantity = (int)$item['quantity'];
+                if ($quantity < 1 || $item['status'] !== 'Available' || (int)$item['stock'] < $quantity) {
+                    throw new RuntimeException($item['product_name'] . ' no longer has enough stock.');
+                }
+
+                $availableSizes = array_values(array_filter(array_map('trim', explode(',', (string)$item['available_sizes']))));
+                $availableColors = array_values(array_filter(array_map('trim', explode(',', (string)$item['available_colors']))));
+                if ($availableSizes && !in_array((string)$item['size'], $availableSizes, true)) {
+                    throw new RuntimeException('Select a valid option for ' . $item['product_name'] . '.');
+                }
+                if ($availableColors && !in_array((string)$item['color'], $availableColors, true)) {
+                    throw new RuntimeException('Select a valid color for ' . $item['product_name'] . '.');
+                }
+
+                $lockedTotal += getDiscountedPrice($item['price'], $item['discount']) * $quantity;
+            }
+
             $orderNumber = generateOrderNumber();
-            $orderStmt = $pdo->prepare("INSERT INTO orders (user_id, order_number, fullname, phone, address, city, province, zip_code, total_amount, payment_method, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')");
-            $orderStmt->execute([$userId, $orderNumber, $fullname, $phone, $address, $city, $province, $zipCode, $totalAmount, $paymentMethod, $notes]);
+            $orderStmt = $pdo->prepare(
+                "INSERT INTO orders
+                 (user_id, order_number, fullname, phone, address, city, province, zip_code, total_amount, payment_method, notes, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')"
+            );
+            $orderStmt->execute([
+                $userId, $orderNumber, $fullname, $phone, $address, $city,
+                $province, $zipCode, $lockedTotal, $paymentMethod, $notes
+            ]);
             $orderId = $pdo->lastInsertId();
 
-            foreach ($cartItems as $item) {
+            foreach ($lockedItems as $item) {
+                $quantity = (int)$item['quantity'];
                 $itemPrice = getDiscountedPrice($item['price'], $item['discount']);
-                $itemStmt = $pdo->prepare("INSERT INTO order_items (order_id, product_id, quantity, price, size, color) VALUES (?, ?, ?, ?, ?, ?)");
-                $itemStmt->execute([$orderId, $item['product_id'], $item['quantity'], $itemPrice, $item['size'], $item['color']]);
 
-                // Update stock and sold
-                $pdo->prepare("UPDATE products SET stock = stock - ?, sold = sold + ? WHERE id = ?")->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
+                $itemStmt = $pdo->prepare(
+                    "INSERT INTO order_items (order_id, product_id, quantity, price, size, color)
+                     VALUES (?, ?, ?, ?, ?, ?)"
+                );
+                $itemStmt->execute([
+                    $orderId, $item['product_id'], $quantity, $itemPrice,
+                    $item['size'], $item['color']
+                ]);
+
+                $stockStmt = $pdo->prepare(
+                    "UPDATE products
+                     SET stock = stock - ?, sold = sold + ?
+                     WHERE id = ? AND status = 'Available' AND stock >= ?"
+                );
+                $stockStmt->execute([$quantity, $quantity, $item['product_id'], $quantity]);
+                if ($stockStmt->rowCount() !== 1) {
+                    throw new RuntimeException($item['product_name'] . ' stock changed during checkout.');
+                }
+
+                $pdo->prepare(
+                    "UPDATE products SET status = 'Out of Stock' WHERE id = ? AND stock <= 0"
+                )->execute([$item['product_id']]);
             }
 
-            // Clear cart
             $pdo->prepare("DELETE FROM cart WHERE user_id = ?")->execute([$userId]);
-
-            // Update user address if empty
-            if (!$user['address']) {
-                $pdo->prepare("UPDATE users SET phone = ?, address = ?, city = ?, province = ?, zip_code = ? WHERE id = ?")->execute([$phone, $address, $city, $province, $zipCode, $userId]);
-            }
+            $pdo->prepare(
+                "UPDATE users
+                 SET phone = ?, address = ?, city = ?, province = ?, zip_code = ?
+                 WHERE id = ?"
+            )->execute([$phone, $address, $city, $province, $zipCode, $userId]);
 
             $pdo->commit();
             setFlash('success', "Order placed successfully! Order Number: $orderNumber");
             header('Location: orders.php');
             exit();
-        } catch (Exception $e) {
-            $pdo->rollBack();
-            $errors[] = 'Something went wrong. Please try again.';
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Checkout failed: ' . $e->getMessage());
+            $errors[] = $e instanceof RuntimeException
+                ? $e->getMessage()
+                : 'Something went wrong. Please try again.';
         }
     }
 }
@@ -91,10 +159,11 @@ require_once __DIR__ . '/../includes/navbar.php';
     <h4 class="fw-bold mb-4"><i class="bi bi-bag-check" style="color:var(--primary)"></i> Checkout</h4>
 
     <?php if (!empty($errors)): ?>
-    <div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $e): ?><li><?= $e ?></li><?php endforeach; ?></ul></div>
+    <div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $e): ?><li><?= htmlspecialchars($e, ENT_QUOTES, 'UTF-8') ?></li><?php endforeach; ?></ul></div>
     <?php endif; ?>
 
     <form method="POST">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
         <div class="row g-4">
             <div class="col-lg-7">
                 <!-- Shipping Info -->

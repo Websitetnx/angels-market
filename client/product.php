@@ -103,7 +103,7 @@ require_once __DIR__ . '/../includes/navbar.php';
                     <div class="detail-label mb-2">Size</div>
                     <div class="size-options">
                         <?php foreach ($sizes as $s): ?>
-                        <button type="button" class="size-btn" data-size="<?= trim($s) ?>"><?= trim($s) ?></button>
+                        <button type="button" class="size-btn" data-size="<?= htmlspecialchars(trim($s), ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars(trim($s)) ?></button>
                         <?php endforeach; ?>
                     </div>
                 </div>
@@ -114,7 +114,7 @@ require_once __DIR__ . '/../includes/navbar.php';
                     <div class="detail-label mb-2">Color</div>
                     <div class="color-options">
                         <?php foreach ($colors as $c): ?>
-                        <button type="button" class="color-btn" data-color="<?= trim($c) ?>"><?= trim($c) ?></button>
+                        <button type="button" class="color-btn" data-color="<?= htmlspecialchars(trim($c), ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars(trim($c)) ?></button>
                         <?php endforeach; ?>
                     </div>
                 </div>
@@ -138,12 +138,16 @@ require_once __DIR__ . '/../includes/navbar.php';
                 <?php endif; ?>
 
                 <div class="d-flex gap-3 mt-4">
-                    <button class="btn-add-cart btn-add-to-cart" data-product-id="<?= $product['id'] ?>">
+                    <?php if ($product['status'] === 'Available' && (int)$product['stock'] > 0): ?>
+                    <button class="btn-add-cart btn-add-to-cart" data-product-id="<?= (int)$product['id'] ?>">
                         <i class="bi bi-cart-plus"></i> Add to Cart
                     </button>
-                    <button class="btn-buy-now" onclick="document.querySelector('.btn-add-to-cart').click(); setTimeout(()=>window.location.href='cart.php',500);">
+                    <button class="btn-buy-now btn-add-to-cart" data-product-id="<?= (int)$product['id'] ?>" data-redirect="cart.php">
                         <i class="bi bi-bag-check"></i> Buy Now
                     </button>
+                    <?php else: ?>
+                    <button class="btn-add-cart" disabled><i class="bi bi-x-circle"></i> Out of Stock</button>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>

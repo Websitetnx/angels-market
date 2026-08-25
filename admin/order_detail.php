@@ -7,76 +7,42 @@ requireAdmin();
 $id = (int)($_GET['id'] ?? 0);
 if (!$id) { header('Location: orders.php'); exit(); }
 
-// Update status from detail page
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
-    $newStatus = sanitize($_POST['new_status']);
-    $validStatuses = ['Pending','Confirmed','Processing','Shipped','Delivered','Cancelled'];
-    if (in_array($newStatus, $validStatuses)) {
-        // Restore stock on cancel
-        if ($newStatus === 'Cancelled') {
-            $curStmt = $pdo->prepare("SELECT status FROM orders WHERE id = ?");
-            $curStmt->execute([$id]);
-            $cur = $curStmt->fetch();
-            if ($cur && $cur['status'] !== 'Cancelled') {
-                $restoreStmt = $pdo->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-                $restoreStmt->execute([$id]);
-                while ($ri = $restoreStmt->fetch()) {
-                    $pdo->prepare("UPDATE products SET stock = stock + ?, sold = GREATEST(0, sold - ?) WHERE id = ?")
-                        ->execute([$ri['quantity'], $ri['quantity'], $ri['product_id']]);
-                }
-            }
-        }
-        $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?")->execute([$newStatus, $id]);
-        setFlash('success', "Order status updated to $newStatus.");
+// Update or delete from the detail page using protected POST actions.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Refresh the page and try again.');
+        header("Location: order_detail.php?id=$id");
+        exit();
     }
-    header("Location: order_detail.php?id=$id");
-    exit();
-}
 
-// Delete order from detail page
-if (isset($_GET['delete'])) {
     try {
-        $pdo->beginTransaction();
-
-        // If order was not cancelled, restore product stock
-        $curStmt = $pdo->prepare("SELECT status FROM orders WHERE id = ?");
-        $curStmt->execute([$id]);
-        $orderInfo = $curStmt->fetch();
-
-        if ($orderInfo && $orderInfo['status'] !== 'Cancelled') {
-            $itemsStmt = $pdo->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-            $itemsStmt->execute([$id]);
-            while ($item = $itemsStmt->fetch()) {
-                $pdo->prepare("UPDATE products SET stock = stock + ?, sold = GREATEST(0, sold - ?) WHERE id = ?")
-                    ->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
-            }
+        if (isset($_POST['update_status'])) {
+            $newStatus = sanitize($_POST['new_status'] ?? '');
+            changeOrderStatus($pdo, $id, $newStatus);
+            setFlash('success', "Order status updated to $newStatus.");
+            header("Location: order_detail.php?id=$id");
+            exit();
         }
 
-        // Delete order items
-        $pdo->prepare("DELETE FROM order_items WHERE order_id = ?")->execute([$id]);
-
-        // Delete the order
-        $stmt = $pdo->prepare("DELETE FROM orders WHERE id = ?");
-        $stmt->execute([$id]);
-
-        if ($stmt->rowCount() > 0) {
-            $pdo->commit();
+        if (isset($_POST['delete_order'])) {
+            deleteOrderSafely($pdo, $id);
             setFlash('success', 'Order deleted successfully.');
-        } else {
-            $pdo->rollBack();
-            setFlash('error', 'Order not found.');
+            header('Location: orders.php');
+            exit();
         }
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        setFlash('error', 'Failed to delete order: ' . $e->getMessage());
+    } catch (Throwable $e) {
+        error_log('Order detail action failed: ' . $e->getMessage());
+        setFlash('error', $e instanceof DomainException
+            ? $e->getMessage()
+            : 'The order could not be updated. Please try again.');
+        header("Location: order_detail.php?id=$id");
+        exit();
     }
-    header('Location: orders.php');
-    exit();
 }
 
 // Fetch order
-$stmt = $pdo->prepare("SELECT o.*, u.fullname, u.email, u.phone, u.address, u.city, u.province, u.zip_code 
-    FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?");
+$stmt = $pdo->prepare("SELECT o.*, u.email AS customer_email
+    FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?");
 $stmt->execute([$id]);
 $order = $stmt->fetch();
 if (!$order) { header('Location: orders.php'); exit(); }
@@ -96,6 +62,7 @@ $pageTitle = 'Order ' . $order['order_number'];
 $statusFlow = ['Pending','Confirmed','Processing','Shipped','Delivered'];
 $currentIndex = array_search($order['status'], $statusFlow);
 $isCancelled = ($order['status'] === 'Cancelled');
+$allowedTransitions = getAllowedOrderTransitions($order['status']);
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/includes/sidebar.php';
@@ -142,9 +109,14 @@ require_once __DIR__ . '/includes/sidebar.php';
         </div>
         <div class="d-flex align-items-center gap-2">
             <span class="badge bg-<?= getStatusBadge($order['status']) ?>" style="font-size:14px;padding:8px 16px"><?= formatStatus($order['status']) ?></span>
-            <a href="order_detail.php?id=<?= $order['id'] ?>&delete=1" class="btn btn-sm btn-outline-danger btn-delete-confirm" title="Delete Order">
-                <i class="bi bi-trash"></i> Delete Order
-            </a>
+            <?php if (in_array($order['status'], ['Pending', 'Cancelled'], true)): ?>
+            <form method="POST" class="d-inline" onsubmit="return confirm('Delete this order? Only pending or cancelled orders can be deleted.');">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                <button type="submit" name="delete_order" class="btn btn-sm btn-outline-danger" title="Delete Order">
+                    <i class="bi bi-trash"></i> Delete Order
+                </button>
+            </form>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -242,7 +214,7 @@ require_once __DIR__ . '/includes/sidebar.php';
                     </div>
                     <div>
                         <div class="fw-600"><?= htmlspecialchars($order['fullname']) ?></div>
-                        <small class="text-muted"><?= htmlspecialchars($order['email']) ?></small>
+                        <small class="text-muted"><?= htmlspecialchars($order['customer_email'] ?? 'Account removed') ?></small>
                     </div>
                 </div>
                 <?php if ($order['phone']): ?>
@@ -288,17 +260,23 @@ require_once __DIR__ . '/includes/sidebar.php';
             <!-- Update Status Card -->
             <div class="detail-card" style="border:2px solid var(--primary-pale)">
                 <h6><i class="bi bi-arrow-repeat"></i> Update Status</h6>
+                <?php if ($allowedTransitions): ?>
                 <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
                     <input type="hidden" name="update_status" value="1">
-                    <select name="new_status" class="form-select mb-3">
-                        <?php foreach (['Pending','Confirmed','Processing','Shipped','Delivered','Cancelled'] as $s): ?>
-                        <option value="<?= $s ?>" <?= $order['status'] === $s ? 'selected' : '' ?>><?= formatStatus($s) ?></option>
+                    <select name="new_status" class="form-select mb-3" required>
+                        <option value="">Choose next status</option>
+                        <?php foreach ($allowedTransitions as $s): ?>
+                        <option value="<?= htmlspecialchars($s, ENT_QUOTES, 'UTF-8') ?>"><?= formatStatus($s) ?></option>
                         <?php endforeach; ?>
                     </select>
                     <button type="submit" class="btn btn-shopee w-100" onclick="return confirm('Update order status?')">
                         <i class="bi bi-check-circle"></i> Update Status
                     </button>
                 </form>
+                <?php else: ?>
+                <p class="text-muted small mb-0">This order is final and cannot be changed.</p>
+                <?php endif; ?>
             </div>
         </div>
     </div>

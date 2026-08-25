@@ -15,7 +15,7 @@ function getDiscountedPrice($price, $discount) {
 
 // Generate order number
 function generateOrderNumber() {
-    return 'ORD-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -6));
+    return 'ORD-' . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
 }
 
 // Get cart count for current user
@@ -46,37 +46,57 @@ function getProductImages($pdo, $productId) {
 
 // Upload product image
 function uploadProductImage($file, $productId) {
-    $allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-    $maxSize = 5 * 1024 * 1024; // 5MB
+    $allowedTypes = [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp',
+        'image/gif'  => 'gif',
+    ];
+    $maxSize = 5 * 1024 * 1024;
 
-    if (!in_array($file['type'], $allowedTypes)) {
-        return ['success' => false, 'message' => 'Invalid file type. Only JPG, PNG, WebP, GIF allowed.'];
+    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        return ['success' => false, 'message' => 'The image upload did not complete.'];
     }
 
-    if ($file['size'] > $maxSize) {
+    $tmpName = $file['tmp_name'] ?? '';
+    if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+        return ['success' => false, 'message' => 'Invalid uploaded file.'];
+    }
+
+    $actualSize = filesize($tmpName);
+    if ($actualSize === false || $actualSize > $maxSize) {
         return ['success' => false, 'message' => 'File too large. Max 5MB.'];
     }
 
-    // Create upload directory if it doesn't exist
-    if (!is_dir(UPLOAD_PATH)) {
-        mkdir(UPLOAD_PATH, 0755, true);
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mimeType = $finfo->file($tmpName);
+    if (!isset($allowedTypes[$mimeType]) || getimagesize($tmpName) === false) {
+        return ['success' => false, 'message' => 'Invalid image. Only JPG, PNG, WebP, and GIF are allowed.'];
     }
 
-    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
-    $filename = 'product_' . $productId . '_' . time() . '_' . mt_rand(1000, 9999) . '.' . $ext;
+    if (!is_dir(UPLOAD_PATH) && !mkdir(UPLOAD_PATH, 0755, true) && !is_dir(UPLOAD_PATH)) {
+        return ['success' => false, 'message' => 'The product image directory could not be created.'];
+    }
+
+    $filename = 'product_' . (int)$productId . '_' . bin2hex(random_bytes(8)) . '.' . $allowedTypes[$mimeType];
     $destination = UPLOAD_PATH . $filename;
 
-    if (move_uploaded_file($file['tmp_name'], $destination)) {
+    if (move_uploaded_file($tmpName, $destination)) {
         return ['success' => true, 'filename' => $filename];
     }
 
-    return ['success' => false, 'message' => 'Upload failed.'];
+    return ['success' => false, 'message' => 'Upload failed. Check the product image folder permissions.'];
 }
 
 // Delete product image file
 function deleteProductImageFile($filename) {
-    $filepath = UPLOAD_PATH . $filename;
-    if (file_exists($filepath)) {
+    $safeFilename = basename((string)$filename);
+    if ($safeFilename === '') {
+        return;
+    }
+
+    $filepath = UPLOAD_PATH . $safeFilename;
+    if (is_file($filepath)) {
         unlink($filepath);
     }
 }
@@ -89,7 +109,7 @@ function getCategories($pdo) {
 
 // Sanitize input
 function sanitize($data) {
-    return htmlspecialchars(strip_tags(trim($data)));
+    return trim(strip_tags((string)$data));
 }
 
 // Truncate text
@@ -157,3 +177,128 @@ function getPagination($totalRecords, $perPage, $currentPage) {
         'perPage' => $perPage
     ];
 }
+
+// Valid order status transitions. Cancelled and Delivered orders are final.
+function getAllowedOrderTransitions($status) {
+    $transitions = [
+        'Pending'    => ['Confirmed', 'Processing', 'Cancelled'],
+        'Confirmed'  => ['Processing', 'Cancelled'],
+        'Processing' => ['Shipped', 'Cancelled'],
+        'Shipped'    => ['Delivered'],
+        'Delivered'  => [],
+        'Cancelled'  => [],
+    ];
+
+    return $transitions[$status] ?? [];
+}
+
+// Change an order status atomically and keep inventory in sync.
+function changeOrderStatus($pdo, $orderId, $newStatus, $userId = null) {
+    $validStatuses = ['Pending', 'Confirmed', 'Processing', 'Shipped', 'Delivered', 'Cancelled'];
+    if (!in_array($newStatus, $validStatuses, true)) {
+        throw new InvalidArgumentException('Invalid order status.');
+    }
+
+    try {
+        $pdo->beginTransaction();
+
+        $sql = "SELECT status FROM orders WHERE id = ?";
+        $params = [(int)$orderId];
+        if ($userId !== null) {
+            $sql .= " AND user_id = ?";
+            $params[] = (int)$userId;
+        }
+        $sql .= " FOR UPDATE";
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $order = $stmt->fetch();
+
+        if (!$order) {
+            throw new RuntimeException('Order not found.');
+        }
+
+        $currentStatus = $order['status'];
+        if ($currentStatus === $newStatus) {
+            $pdo->commit();
+            return;
+        }
+
+        if (!in_array($newStatus, getAllowedOrderTransitions($currentStatus), true)) {
+            throw new DomainException("Order cannot move from $currentStatus to $newStatus.");
+        }
+
+        if ($newStatus === 'Cancelled') {
+            $itemsStmt = $pdo->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
+            $itemsStmt->execute([(int)$orderId]);
+            foreach ($itemsStmt->fetchAll() as $item) {
+                $restoreStmt = $pdo->prepare(
+                    "UPDATE products
+                     SET stock = stock + ?,
+                         sold = GREATEST(0, sold - ?),
+                         status = 'Available'
+                     WHERE id = ?"
+                );
+                $restoreStmt->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
+            }
+        }
+
+        $updateStmt = $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?");
+        $updateStmt->execute([$newStatus, (int)$orderId]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+}
+
+// Delete only Pending or Cancelled orders so completed sales history is preserved.
+function deleteOrderSafely($pdo, $orderId) {
+    try {
+        $pdo->beginTransaction();
+
+        $stmt = $pdo->prepare("SELECT status FROM orders WHERE id = ? FOR UPDATE");
+        $stmt->execute([(int)$orderId]);
+        $order = $stmt->fetch();
+
+        if (!$order) {
+            throw new RuntimeException('Order not found.');
+        }
+        if (!in_array($order['status'], ['Pending', 'Cancelled'], true)) {
+            throw new DomainException('Only Pending or Cancelled orders can be deleted.');
+        }
+
+        if ($order['status'] === 'Pending') {
+            $itemsStmt = $pdo->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
+            $itemsStmt->execute([(int)$orderId]);
+            foreach ($itemsStmt->fetchAll() as $item) {
+                $restoreStmt = $pdo->prepare(
+                    "UPDATE products
+                     SET stock = stock + ?,
+                         sold = GREATEST(0, sold - ?),
+                         status = 'Available'
+                     WHERE id = ?"
+                );
+                $restoreStmt->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
+            }
+        }
+
+        $pdo->prepare("DELETE FROM order_items WHERE order_id = ?")->execute([(int)$orderId]);
+        $deleteStmt = $pdo->prepare("DELETE FROM orders WHERE id = ?");
+        $deleteStmt->execute([(int)$orderId]);
+
+        if ($deleteStmt->rowCount() !== 1) {
+            throw new RuntimeException('Order could not be deleted.');
+        }
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+}
+

@@ -2,6 +2,7 @@
  * Angel's Beauty Co. - Main JavaScript
  */
 $(document).ready(function() {
+    const csrfToken = $('meta[name="csrf-token"]').attr('content') || '';
 
     // Toast notification
     window.showToast = function(message, type = 'success') {
@@ -25,18 +26,42 @@ $(document).ready(function() {
     $(document).on('click', '.btn-add-to-cart', function(e) {
         e.preventDefault();
         e.stopPropagation();
+
         const btn = $(this);
-        const productId = btn.data('product-id');
+        const originalHtml = btn.html();
+        const productId = parseInt(btn.data('product-id'), 10);
+        const sizeRequired = $('.size-options .size-btn').length > 0;
+        const colorRequired = $('.color-options .color-btn').length > 0;
         const size = btn.data('size') || $('.size-btn.active').data('size') || '';
         const color = btn.data('color') || $('.color-btn.active').data('color') || '';
-        const qty = $('#qty-input').val() || 1;
+        const qty = Math.max(1, parseInt($('#qty-input').val(), 10) || 1);
+
+        if (!productId) {
+            showToast('Invalid product selected.', 'error');
+            return;
+        }
+        if (sizeRequired && !size) {
+            showToast('Please select a size or product option.', 'warning');
+            return;
+        }
+        if (colorRequired && !color) {
+            showToast('Please select a color.', 'warning');
+            return;
+        }
 
         btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span>');
 
         $.ajax({
             url: baseUrl + 'client/ajax/cart_action.php',
             method: 'POST',
-            data: { action: 'add', product_id: productId, quantity: qty, size: size, color: color },
+            data: {
+                action: 'add',
+                product_id: productId,
+                quantity: qty,
+                size: size,
+                color: color,
+                csrf_token: csrfToken
+            },
             dataType: 'json',
             success: function(res) {
                 if (res.success) {
@@ -44,13 +69,22 @@ $(document).ready(function() {
                     if (res.cart_count !== undefined) {
                         $('.cart-badge').text(res.cart_count);
                     }
+                    const redirectUrl = btn.data('redirect');
+                    if (redirectUrl) {
+                        window.location.href = redirectUrl;
+                    }
                 } else {
                     showToast(res.message, 'error');
                 }
             },
-            error: function() { showToast('Something went wrong.', 'error'); },
+            error: function(xhr) {
+                const message = xhr.responseJSON && xhr.responseJSON.message
+                    ? xhr.responseJSON.message
+                    : 'Something went wrong.';
+                showToast(message, 'error');
+            },
             complete: function() {
-                btn.prop('disabled', false).html('<i class="bi bi-cart-plus"></i> Add to Cart');
+                btn.prop('disabled', false).html(originalHtml);
             }
         });
     });
@@ -62,7 +96,7 @@ $(document).ready(function() {
         $.ajax({
             url: baseUrl + 'client/ajax/cart_action.php',
             method: 'POST',
-            data: { action: action, cart_id: cartId },
+            data: { action: action, cart_id: cartId, csrf_token: csrfToken },
             dataType: 'json',
             success: function(res) {
                 if (res.success) { location.reload(); }
@@ -78,7 +112,7 @@ $(document).ready(function() {
             $.ajax({
                 url: baseUrl + 'client/ajax/cart_action.php',
                 method: 'POST',
-                data: { action: 'remove', cart_id: cartId },
+                data: { action: 'remove', cart_id: cartId, csrf_token: csrfToken },
                 dataType: 'json',
                 success: function(res) {
                     if (res.success) { location.reload(); }

@@ -6,43 +6,60 @@ requireAdmin();
 
 $pageTitle = 'Manage Products';
 
-// Delete product
-if (isset($_GET['delete'])) {
-    $delId = (int)$_GET['delete'];
-    try {
-        $pdo->beginTransaction();
+// Delete products only when they are not part of an order.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_product'])) {
+    $delId = filter_var($_POST['product_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 
-        // 1. Delete images from disk
-        $imgStmt = $pdo->prepare("SELECT image FROM product_images WHERE product_id = ?");
-        $imgStmt->execute([$delId]);
-        while ($img = $imgStmt->fetch()) {
-            deleteProductImageFile($img['image']);
-        }
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Refresh the page and try again.');
+    } elseif ($delId === false) {
+        setFlash('error', 'Invalid product selected.');
+    } else {
+        $imageFiles = [];
+        try {
+            $pdo->beginTransaction();
 
-        // 2. Delete product_images records
-        $pdo->prepare("DELETE FROM product_images WHERE product_id = ?")->execute([$delId]);
+            $productStmt = $pdo->prepare("SELECT id FROM products WHERE id = ? FOR UPDATE");
+            $productStmt->execute([$delId]);
+            if (!$productStmt->fetch()) {
+                throw new RuntimeException('Product not found.');
+            }
 
-        // 3. Delete cart items referencing this product
-        $pdo->prepare("DELETE FROM cart WHERE product_id = ?")->execute([$delId]);
+            $historyStmt = $pdo->prepare("SELECT COUNT(*) FROM order_items WHERE product_id = ?");
+            $historyStmt->execute([$delId]);
+            if ((int)$historyStmt->fetchColumn() > 0) {
+                throw new DomainException('This product has order history. Mark it Out of Stock instead of deleting it.');
+            }
 
-        // 4. Delete order items referencing this product
-        $pdo->prepare("DELETE FROM order_items WHERE product_id = ?")->execute([$delId]);
+            $imgStmt = $pdo->prepare("SELECT image FROM product_images WHERE product_id = ?");
+            $imgStmt->execute([$delId]);
+            $imageFiles = array_column($imgStmt->fetchAll(), 'image');
 
-        // 5. Delete the product
-        $stmt = $pdo->prepare("DELETE FROM products WHERE id = ?");
-        $stmt->execute([$delId]);
+            $pdo->prepare("DELETE FROM product_images WHERE product_id = ?")->execute([$delId]);
+            $pdo->prepare("DELETE FROM cart WHERE product_id = ?")->execute([$delId]);
+            $deleteStmt = $pdo->prepare("DELETE FROM products WHERE id = ?");
+            $deleteStmt->execute([$delId]);
 
-        if ($stmt->rowCount() > 0) {
+            if ($deleteStmt->rowCount() !== 1) {
+                throw new RuntimeException('Product could not be deleted.');
+            }
+
             $pdo->commit();
+            foreach ($imageFiles as $imageFile) {
+                deleteProductImageFile($imageFile);
+            }
             setFlash('success', 'Product deleted successfully.');
-        } else {
-            $pdo->rollBack();
-            setFlash('error', 'Product not found.');
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Product deletion failed: ' . $e->getMessage());
+            setFlash('error', $e instanceof DomainException
+                ? $e->getMessage()
+                : 'The product could not be deleted. Please try again.');
         }
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        setFlash('error', 'Failed to delete product: ' . $e->getMessage());
     }
+
     header('Location: products.php');
     exit();
 }
@@ -132,7 +149,11 @@ require_once __DIR__ . '/includes/sidebar.php';
                     <div class="d-flex gap-1">
                         <a href="<?= CLIENT_URL ?>product.php?id=<?= $p['id'] ?>" class="btn btn-sm btn-outline-primary" target="_blank" title="View"><i class="bi bi-eye"></i></a>
                         <a href="edit_product.php?id=<?= $p['id'] ?>" class="btn btn-sm btn-outline-warning" title="Edit"><i class="bi bi-pencil"></i></a>
-                        <a href="products.php?delete=<?= $p['id'] ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure you want to delete this product?');" title="Delete"><i class="bi bi-trash"></i></a>
+                        <form method="POST" class="d-inline" onsubmit="return confirm('Delete this product? Products with order history cannot be deleted.');">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                            <input type="hidden" name="product_id" value="<?= (int)$p['id'] ?>">
+                            <button type="submit" name="delete_product" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></button>
+                        </form>
                     </div>
                 </td>
             </tr>

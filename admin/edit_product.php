@@ -18,26 +18,65 @@ $images = getProductImages($pdo, $id);
 $existingSizes = $product['sizes'] ? explode(',', $product['sizes']) : [];
 $errors = [];
 
-// Delete image
-if (isset($_GET['delete_image'])) {
-    $imgId = (int)$_GET['delete_image'];
-    try {
-        $imgStmt = $pdo->prepare("SELECT * FROM product_images WHERE id = ? AND product_id = ?");
-        $imgStmt->execute([$imgId, $id]);
-        $img = $imgStmt->fetch();
-        if ($img) {
+// Delete an image through the protected edit form.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_image'])) {
+    $imgId = filter_var($_POST['delete_image'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Refresh the page and try again.');
+    } elseif ($imgId === false) {
+        setFlash('error', 'Invalid image selected.');
+    } else {
+        try {
+            $pdo->beginTransaction();
+
+            $imgStmt = $pdo->prepare(
+                "SELECT image, is_primary FROM product_images
+                 WHERE id = ? AND product_id = ? FOR UPDATE"
+            );
+            $imgStmt->execute([$imgId, $id]);
+            $img = $imgStmt->fetch();
+
+            if (!$img) {
+                throw new RuntimeException('Image not found.');
+            }
+
+            $pdo->prepare("DELETE FROM product_images WHERE id = ? AND product_id = ?")
+                ->execute([$imgId, $id]);
+
+            if ((int)$img['is_primary'] === 1) {
+                $nextStmt = $pdo->prepare(
+                    "SELECT id FROM product_images WHERE product_id = ? ORDER BY id LIMIT 1"
+                );
+                $nextStmt->execute([$id]);
+                $nextId = $nextStmt->fetchColumn();
+                if ($nextId) {
+                    $pdo->prepare("UPDATE product_images SET is_primary = 1 WHERE id = ?")
+                        ->execute([$nextId]);
+                }
+            }
+
+            $pdo->commit();
             deleteProductImageFile($img['image']);
-            $pdo->prepare("DELETE FROM product_images WHERE id = ?")->execute([$imgId]);
             setFlash('success', 'Image deleted successfully.');
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Product image deletion failed: ' . $e->getMessage());
+            setFlash('error', 'The image could not be deleted. Please try again.');
         }
-    } catch (PDOException $e) {
-        setFlash('error', 'Failed to delete image: ' . $e->getMessage());
     }
+
     header("Location: edit_product.php?id=$id");
     exit();
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        $errors[] = 'Your session expired. Refresh the page and try again.';
+    }
+
     $productName = sanitize($_POST['product_name'] ?? '');
     $description = sanitize($_POST['description'] ?? '');
     $categoryId = (int)($_POST['category_id'] ?? 0);
@@ -65,12 +104,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Upload new images
         if (!empty($_FILES['images']['name'][0])) {
             $files = $_FILES['images'];
+            $hasPrimary = false;
+            foreach ($images as $existingImage) {
+                if ((int)$existingImage['is_primary'] === 1) {
+                    $hasPrimary = true;
+                    break;
+                }
+            }
             for ($i = 0; $i < count($files['name']); $i++) {
                 $file = ['name'=>$files['name'][$i], 'type'=>$files['type'][$i], 'tmp_name'=>$files['tmp_name'][$i], 'error'=>$files['error'][$i], 'size'=>$files['size'][$i]];
                 if ($file['error'] === 0) {
                     $result = uploadProductImage($file, $id);
                     if ($result['success']) {
-                        $pdo->prepare("INSERT INTO product_images (product_id, image, is_primary) VALUES (?,?,0)")->execute([$id, $result['filename']]);
+                        $isPrimary = $hasPrimary ? 0 : 1;
+                        $pdo->prepare("INSERT INTO product_images (product_id, image, is_primary) VALUES (?,?,?)")->execute([$id, $result['filename'], $isPrimary]);
+                        $hasPrimary = true;
                     }
                 }
             }
@@ -97,6 +145,7 @@ require_once __DIR__ . '/includes/sidebar.php';
     <?php endif; ?>
 
     <form method="POST" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
         <div class="row g-4">
             <div class="col-lg-8">
                 <div class="bg-white rounded-3 shadow-sm p-4 mb-3">
@@ -182,7 +231,7 @@ require_once __DIR__ . '/includes/sidebar.php';
                         ?>
                         <div class="position-relative">
                             <img src="<?= $imgSrc ?>" style="width:70px;height:70px;object-fit:cover;border-radius:6px" alt="">
-                            <a href="edit_product.php?id=<?= $id ?>&delete_image=<?= $img['id'] ?>" class="btn btn-sm btn-danger position-absolute top-0 end-0" style="padding:0 4px;font-size:10px;border-radius:50%" onclick="return confirm('Delete this image?')">×</a>
+                            <button type="submit" name="delete_image" value="<?= (int)$img['id'] ?>" formnovalidate class="btn btn-sm btn-danger position-absolute top-0 end-0" style="padding:0 4px;font-size:10px;border-radius:50%" onclick="return confirm('Delete this image?')" aria-label="Delete image">×</button>
                             <?php if ($img['is_primary']): ?><span class="badge bg-success position-absolute bottom-0 start-0" style="font-size:8px">Primary</span><?php endif; ?>
                         </div>
                         <?php endforeach; ?>

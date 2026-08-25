@@ -18,7 +18,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $province = sanitize($_POST['province'] ?? '');
     $zipCode = sanitize($_POST['zip_code'] ?? '');
 
-    if (!$fullname) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        $error = 'Your session expired. Refresh the page and try again.';
+    } elseif (!$fullname) {
         $error = 'Full name is required.';
     } else {
         $stmt = $pdo->prepare("UPDATE users SET fullname=?, phone=?, address=?, city=?, province=?, zip_code=? WHERE id=?");
@@ -29,7 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // Password change
-    if (!empty($_POST['new_password'])) {
+    if (!$error && !empty($_POST['new_password'])) {
         $currentPass = $_POST['current_password'] ?? '';
         $newPass = $_POST['new_password'] ?? '';
         $confirmPass = $_POST['confirm_password'] ?? '';
@@ -67,6 +69,7 @@ require_once __DIR__ . '/../includes/navbar.php';
                 <?php if ($error): ?><div class="alert alert-danger py-2 small"><?= $error ?></div><?php endif; ?>
 
                 <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
                     <h6 class="fw-bold mb-3 border-bottom pb-2" style="border-color:var(--primary)!important">Personal Information</h6>
                     <div class="row g-3 mb-4">
                         <div class="col-md-6">

@@ -10,38 +10,22 @@ $statusFilter = isset($_GET['status']) ? sanitize($_GET['status']) : '';
 
 // Handle Order Cancellation by Client
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_order'])) {
-    $orderId = (int)$_POST['order_id'];
-    
-    // Ensure the order belongs to this client and is in 'Pending' state
-    $checkStmt = $pdo->prepare("SELECT status FROM orders WHERE id = ? AND user_id = ?");
-    $checkStmt->execute([$orderId, $userId]);
-    $orderData = $checkStmt->fetch();
-    
-    if ($orderData && $orderData['status'] === 'Pending') {
-        try {
-            $pdo->beginTransaction();
-            
-            // Set status to Cancelled
-            $updateStmt = $pdo->prepare("UPDATE orders SET status = 'Cancelled' WHERE id = ?");
-            $updateStmt->execute([$orderId]);
-            
-            // Restore inventory and sold count
-            $itemsStmt = $pdo->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-            $itemsStmt->execute([$orderId]);
-            while ($item = $itemsStmt->fetch()) {
-                $restoreStmt = $pdo->prepare("UPDATE products SET stock = stock + ?, sold = GREATEST(0, sold - ?) WHERE id = ?");
-                $restoreStmt->execute([$item['quantity'], $item['quantity'], $item['product_id']]);
-            }
-            
-            $pdo->commit();
-            setFlash('success', 'Order cancelled successfully.');
-        } catch (Exception $e) {
-            $pdo->rollBack();
-            setFlash('error', 'Failed to cancel the order.');
-        }
+    $orderId = filter_var($_POST['order_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        setFlash('error', 'Your session expired. Refresh the page and try again.');
+    } elseif ($orderId === false) {
+        setFlash('error', 'Invalid order selected.');
     } else {
-        setFlash('error', 'Only pending orders can be cancelled.');
+        try {
+            changeOrderStatus($pdo, $orderId, 'Cancelled', $userId);
+            setFlash('success', 'Order cancelled successfully.');
+        } catch (Throwable $e) {
+            error_log('Client order cancellation failed: ' . $e->getMessage());
+            setFlash('error', 'Only your pending orders can be cancelled.');
+        }
     }
+
     header('Location: orders.php' . ($statusFilter ? '?status=' . urlencode($statusFilter) : ''));
     exit();
 }
@@ -122,7 +106,8 @@ require_once __DIR__ . '/../includes/navbar.php';
             </div>
             <?php if ($order['status'] === 'Pending'): ?>
             <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to cancel this order?')">
-                <input type="hidden" name="order_id" value="<?= $order['id'] ?>">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="order_id" value="<?= (int)$order['id'] ?>">
                 <button type="submit" name="cancel_order" class="btn btn-sm btn-outline-danger">Cancel Order</button>
             </form>
             <?php endif; ?>
