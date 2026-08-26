@@ -1,0 +1,41 @@
+clothing-ordering-system/
+│
+├── admin/
+│   ├── dashboard.php
+│   ├── login.php
+│   ├── products.php
+│   ├── add_product.php
+│   ├── edit_product.php
+│   ├── orders.php
+│   ├── customers.php
+│   └── logout.php
+│
+├── client/
+│   ├── home.php
+│   ├── product.php
+│   ├── cart.php
+│   ├── checkout.php
+│   ├── orders.php
+│   ├── profile.php
+│   ├── login.php
+│   ├── register.php
+│   └── logout.php
+│
+├── uploads/
+│   └── products/
+│
+├── includes/
+│   ├── db.php
+│   ├── header.php
+│   ├── footer.php
+│   ├── navbar.php
+│   ├── auth.php
+│   └── functions.php
+│
+├── assets/
+│   ├── css/
+│   ├── js/
+│   └── images/
+│
+└── database/
+    └── clothing_ordering.sql

@@ -1,0 +1,15 @@
+# Uploaded product images (large binary files)
+uploads/products/
+
+# Temporary / test files
+test_*.php
+seed_*.php
+create_*.php
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
